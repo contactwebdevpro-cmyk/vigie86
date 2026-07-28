@@ -1,88 +1,66 @@
-# VIGIE 86 — version sécurisée (Vercel + API serverless)
+# VIGIE 86 — version 100% client (Firebase direct, sans backend)
 
-## Ce qui a changé par rapport à ta version d'origine
+## Comment ça marche maintenant
 
-Avant : le fichier HTML contenait la config Firebase (dont l'`apiKey`) en clair,
-et le navigateur parlait **directement** à Firestore.
+- `public/index.html` contient la config Firebase (celle que tu utilises,
+  projet `fnradar-2918a`) et parle **directement** à Firestore depuis le
+  navigateur, via le SDK Firebase JS (chargé en modules ES depuis
+  `gstatic.com`, pas d'installation npm nécessaire).
+- Chaque visiteur est connecté en **authentification anonyme** Firebase
+  (`signInAnonymously`) dès l'ouverture de la page. Ça lui donne un `uid`
+  fiable et non falsifiable, utilisé pour :
+  - savoir qui est l'auteur d'un signalement (`reporterUid`),
+  - empêcher de voter au nom de quelqu'un d'autre,
+  - autoriser uniquement l'auteur à changer le statut de son signalement.
+- La liste des signalements se met à jour **en temps réel** (`onSnapshot`),
+  plus besoin de rafraîchir toutes les X secondes.
+- `firestore.rules` fait tout le travail de sécurité côté serveur Firebase
+  (validation des champs, qui peut créer/modifier quoi).
+- Il n'y a plus aucun dossier `api/`, plus de fonctions serverless, plus de
+  variables d'environnement Vercel à configurer : c'est un site 100%
+  statique.
 
-Maintenant :
-- `public/index.html` ne contient **plus aucun identifiant**. Il appelle
-  `/api/reports`, `/api/vote`, `/api/status`.
-- Ces 3 fichiers dans `api/` sont des fonctions serverless Vercel (Node.js)
-  qui parlent à Firestore avec le **SDK Admin**, via des identifiants qui
-  restent uniquement dans les variables d'environnement de Vercel — jamais
-  livrés au navigateur, jamais visibles dans "Voir le code source".
-- `firestore.rules` bloque désormais **tout accès direct** à la base depuis
-  un navigateur : seul le serveur (Admin SDK) peut lire/écrire. Double
-  verrou, même si quelqu'un retrouvait un ancien identifiant.
-- Le vote et le changement de statut sont maintenant vérifiés côté serveur
-  (avant, le "propriétaire" du signalement n'était vérifié que côté
-  interface, donc contournable).
-- Pas de temps réel `onSnapshot` (ça nécessite une connexion directe au
-  client Firebase) : la liste se rafraîchit automatiquement toutes les 12
-  secondes via l'API. C'est la contrepartie du fait de tout cacher derrière
-  un serveur.
+## ⚠️ À savoir sur cette approche
+
+- **L'`apiKey` visible dans le code n'est pas un secret** — c'est documenté
+  officiellement par Google/Firebase : elle identifie ton projet, elle ne
+  l'authentifie pas. La vraie sécurité vient des règles Firestore.
+- **L'anti-spam (1 signalement / 10 min) n'est plus garanti côté serveur**,
+  seulement côté navigateur via `localStorage`. Un utilisateur qui vide son
+  stockage local ou navigue en privé peut le contourner. Si tu veux un
+  anti-spam robuste, il faudrait soit :
+  - réintroduire une fonction serveur (Vercel/Cloud Functions) juste pour
+    cette vérification,
+  - soit activer **Firebase App Check** (protège contre les abus
+    automatisés, pas contre un humain qui recharge la page manuellement).
 
 ## Étapes de déploiement
 
-### 1. Créer/retrouver ton projet Firebase
-Va sur `console.firebase.google.com`, ouvre ton projet (ou crée-en un),
-active **Firestore Database** si ce n'est pas déjà fait.
+### 1. Active l'authentification anonyme
+Console Firebase (`console.firebase.google.com`) → ton projet
+`fnradar-2918a` → **Authentication → Sign-in method** → active
+**Anonyme**. Sans ça, `signInAnonymously()` échoue et rien ne fonctionne.
 
-### 2. Générer une clé de compte de service (Admin SDK)
-Dans **Paramètres du projet → Comptes de service**, clique sur
-**Générer une nouvelle clé privée**. Un fichier JSON se télécharge — il
-contient `project_id`, `client_email`, `private_key`.
+### 2. Active Firestore si ce n'est pas déjà fait
+**Firestore Database** → crée la base en mode natif si nécessaire.
 
-⚠️ Ce fichier est un secret absolu (accès total à ta base). Ne le mets
-jamais dans GitHub, jamais dans le dossier du projet.
+### 3. Publie les règles de sécurité
+**Firestore Database → Règles** → colle le contenu de `firestore.rules`
+fourni ici → **Publier**.
 
-### 3. Configurer les variables d'environnement sur Vercel
-Dans ton projet Vercel → **Settings → Environment Variables**, ajoute :
-
-| Nom | Valeur |
-|---|---|
-| `FIREBASE_PROJECT_ID` | le `project_id` du JSON |
-| `FIREBASE_CLIENT_EMAIL` | le `client_email` du JSON |
-| `FIREBASE_PRIVATE_KEY` | le `private_key` du JSON (garde les `\n`) |
-
-(Regarde `.env.example` pour le format exact.)
-
-### 4. Verrouiller les règles Firestore
-Dans la console Firebase → **Firestore Database → Règles**, colle le
-contenu de `firestore.rules` fourni ici, puis publie.
-
-### 5. Déployer
-Pousse ce dossier sur un repo GitHub, puis dans Vercel :
-**Add New → Project → Import** ce repo. Vercel détecte automatiquement
-`public/` comme dossier statique et `api/*.js` comme fonctions serverless,
-aucune config supplémentaire n'est nécessaire.
-
-### 6. À propos de ton ancienne clé déjà visible sur GitHub
-Bonne nouvelle : une `apiKey` Firebase web n'est pas un secret en soi
-(Google le documente explicitement) — elle sert juste à identifier ton
-projet, pas à l'authentifier. Le vrai risque venait de règles Firestore trop
-permissives couplées à cette clé publique. Une fois l'étape 4 faite
-(règles à `if false`), cette ancienne clé ne permet plus rien, même si elle
-traîne encore dans l'historique Git. Si tu veux être tranquille à 100%, tu
-peux quand même la restreindre ou la régénérer dans Google Cloud Console →
-Identifiants, mais ce n'est plus indispensable.
+### 4. Déploie
+Pousse ce dossier sur GitHub, puis sur Vercel : **Add New → Project →
+Import**. Comme il n'y a plus que `public/` (site statique), aucune
+configuration supplémentaire n'est nécessaire — pas de variables
+d'environnement à ajouter.
 
 ## Structure du projet
 
 ```
-vigie-feux-vercel/
-├── api/
-│   ├── reports.js       # GET liste / POST créer un signalement
-│   ├── vote.js          # POST voter confirm/fake
-│   ├── status.js        # POST changer le statut (vérifie le propriétaire)
-│   └── _lib/
-│       ├── firebaseAdmin.js  # init Admin SDK depuis les env vars
-│       └── uid.js            # cookie anonyme httpOnly (anti-spam)
+vigie-feux/
 ├── public/
-│   └── index.html       # front-end, sans aucun identifiant
+│   └── index.html       # front-end complet : UI + appels Firestore directs
 ├── firestore.rules
 ├── package.json
-├── .env.example
-└── .gitignore
+└── README.md
 ```

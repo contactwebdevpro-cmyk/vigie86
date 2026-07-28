@@ -1,11 +1,56 @@
 rules_version = '2';
 
-// Le SDK Admin (utilisé par les fonctions serverless Vercel) ignore ces
-// règles : il a toujours accès en lecture/écriture. Ces règles servent
-// uniquement à bloquer tout accès DIRECT depuis un navigateur, un curl,
-// ou n'importe quel client qui utiliserait la clé publique du projet.
+// Accès direct depuis le navigateur (pas de backend / SDK Admin).
+// Chaque visiteur est authentifié anonymement (signInAnonymously côté
+// client) : request.auth.uid est donc fiable et non falsifiable, ce qui
+// permet de vérifier ici qui a le droit de faire quoi.
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    match /signalements/{reportId} {
+
+      // Tout le monde peut lire la liste des signalements.
+      allow read: if true;
+
+      // Création : uniquement un utilisateur authentifié (même anonyme),
+      // avec un document conforme au format attendu par l'application.
+      allow create: if request.auth != null
+        && request.resource.data.reporterUid == request.auth.uid
+        && request.resource.data.lat is number
+        && request.resource.data.lng is number
+        && request.resource.data.type in ['foret', 'champ', 'batiment', 'vehicule']
+        && request.resource.data.gravite in ['mineur', 'modere', 'critique']
+        && request.resource.data.statut == 'actif'
+        && request.resource.data.desc is string
+        && request.resource.data.desc.size() <= 1000
+        && request.resource.data.photoBase64 is string
+        && request.resource.data.photoBase64.size() <= 900000
+        && request.resource.data.votes == {};
+
+      // Mise à jour : deux cas autorisés, et rien d'autre.
+      allow update: if request.auth != null && (
+        // 1) Voter : seul le champ "votes" change, et uniquement la clé
+        //    correspondant à l'utilisateur qui vote (impossible de voter
+        //    au nom de quelqu'un d'autre).
+        (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['votes'])
+          && request.resource.data.votes.diff(resource.data.votes).affectedKeys().hasOnly([request.auth.uid])
+        )
+        ||
+        // 2) Changer le statut : seul l'auteur du signalement peut le
+        //    faire, vérifié via request.auth.uid (non falsifiable).
+        (
+          request.resource.data.diff(resource.data).affectedKeys().hasOnly(['statut'])
+          && resource.data.reporterUid == request.auth.uid
+          && request.resource.data.statut in ['actif', 'maitrise', 'eteint']
+        )
+      );
+
+      // Personne ne peut supprimer un signalement depuis le client.
+      allow delete: if false;
+    }
+
+    // Tout le reste de la base reste bloqué par défaut.
     match /{document=**} {
       allow read, write: if false;
     }

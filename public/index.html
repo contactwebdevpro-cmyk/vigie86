@@ -466,13 +466,35 @@
 <div class="toast" id="toast"></div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
-<script>
-  // Aucune clé, aucun identifiant Firebase ici : tout passe par les routes
-  // /api/reports, /api/vote, /api/status (fonctions serverless Vercel).
-  // Les identifiants Firebase Admin restent côté serveur (variables d'env Vercel).
+<script type="module">
+  // ---------- FIREBASE (client direct, sans backend) ----------
+  // L'apiKey d'une web app Firebase n'est pas un secret : elle identifie le
+  // projet, elle ne l'authentifie pas (voir doc officielle Firebase/Google).
+  // La vraie protection vient des règles Firestore (firestore.rules) et de
+  // l'authentification anonyme utilisée ci-dessous pour savoir qui a créé
+  // quel signalement, de façon non falsifiable côté client.
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
+  import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
+  import {
+    getFirestore, collection, addDoc, updateDoc, doc,
+    onSnapshot, query, orderBy, limit, serverTimestamp
+  } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyDo1eVDC7i2m2lS9dWhZsQtapqgifTk2uk",
+    authDomain: "fnradar-2918a.firebaseapp.com",
+    projectId: "fnradar-2918a",
+    storageBucket: "fnradar-2918a.firebasestorage.app",
+    messagingSenderId: "983661787383",
+    appId: "1:983661787383:web:430796a387359c9d78fbf2"
+  };
+  const fbApp = initializeApp(firebaseConfig);
+  const auth = getAuth(fbApp);
+  const db = getFirestore(fbApp);
+  const reportsCol = collection(db, 'signalements');
 
   const CONTEST_THRESHOLD = 3; // fakeVotes - confirmVotes >= this => marqué "contesté"
-  const POLL_MS = 12000; // fréquence de rafraîchissement (pas de temps réel via API REST)
+  const RATE_LIMIT_MS = 10 * 60 * 1000; // 1 signalement / 10 min (contrôle côté navigateur uniquement, voir note plus bas)
 
   const VIENNE_CENTER = [46.62, 0.48];
   const SEV_LABEL = { mineur:'Mineur', modere:'Modéré', critique:'Critique' };
@@ -490,7 +512,7 @@
 
   // ---------- STATE ----------
   let reports = [];
-  let currentUid = null;
+  let currentUid = null; // uid Firebase Auth anonyme (non falsifiable, vérifié par les règles Firestore)
   let userPos = null;       // {lat,lng,accuracy}
   let photoFile = null;
   let selectedType = 'foret';
@@ -769,37 +791,63 @@
     });
   }
 
-  // ---------- API (proxy serverless — aucune clé côté navigateur) ----------
-  async function loadReports(){
-    try{
-      const res = await fetch('/api/reports');
-      if(!res.ok) throw new Error('Erreur de chargement des signalements.');
-      const data = await res.json();
-      reports = data.reports || [];
-      currentUid = data.uid || null;
+  // ---------- FIREBASE : AUTH ANONYME + TEMPS RÉEL ----------
+  // signInAnonymously donne à chaque visiteur un uid Firebase stable et
+  // non falsifiable (contrairement à un simple identifiant généré côté
+  // navigateur) : les règles Firestore s'appuient dessus pour vérifier qui
+  // est propriétaire d'un signalement.
+  let unsubscribe = null;
+
+  onAuthStateChanged(auth, (user)=>{
+    if(user){
+      currentUid = user.uid;
+      btnReport.disabled = false;
+      startListening();
+    }
+  });
+
+  signInAnonymously(auth).catch((err)=>{
+    console.error(err);
+    document.getElementById('connLabel').textContent = 'Erreur de connexion';
+    showToast("Impossible de se connecter au service (authentification anonyme). Vérifiez qu'elle est activée dans Firebase.");
+  });
+
+  function startListening(){
+    if(unsubscribe) return; // déjà abonné
+    const q = query(reportsCol, orderBy('createdAt', 'desc'), limit(500));
+    unsubscribe = onSnapshot(q, (snap)=>{
+      reports = snap.docs.map((d)=>{
+        const data = d.data();
+        const votes = data.votes || {};
+        let confirmCount = 0, fakeCount = 0;
+        Object.values(votes).forEach((v)=>{
+          if(v === 'confirm') confirmCount++;
+          else if(v === 'fake') fakeCount++;
+        });
+        return {
+          id: d.id,
+          lat: data.lat, lng: data.lng, lieu: data.lieu || '',
+          type: data.type, gravite: data.gravite, statut: data.statut,
+          desc: data.desc || '', photoBase64: data.photoBase64 || null,
+          createdAtMillis: data.createdAt ? data.createdAt.toMillis() : Date.now(),
+          confirmCount, fakeCount,
+          myVote: votes[currentUid] || null,
+          isOwner: data.reporterUid === currentUid,
+        };
+      });
       document.getElementById('connStatus').classList.add('online');
       document.getElementById('connLabel').textContent = 'Connecté';
-      btnReport.disabled = false;
       renderAll();
-    }catch(err){
+    }, (err)=>{
       console.error(err);
       document.getElementById('connLabel').textContent = 'Erreur de connexion';
-      showToast('Erreur de synchronisation avec le serveur.');
-    }
+      showToast('Erreur de synchronisation avec Firestore (vérifiez les règles).');
+    });
   }
-
-  loadReports();
-  setInterval(loadReports, POLL_MS);
 
   window.voteReport = async function(id, type){
     try{
-      const res = await fetch('/api/vote', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, type })
-      });
-      if(!res.ok){ const e = await res.json().catch(()=>({})); throw new Error(e.error || 'Erreur lors du vote.'); }
-      await loadReports();
+      await updateDoc(doc(db, 'signalements', id), { [`votes.${currentUid}`]: type });
     }catch(err){
       console.error(err);
       showToast(err.message || 'Erreur lors du vote.');
@@ -808,23 +856,32 @@
 
   window.setStatus = async function(id, statut){
     try{
-      const res = await fetch('/api/status', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, statut })
-      });
-      if(!res.ok){ const e = await res.json().catch(()=>({})); throw new Error(e.error || 'Erreur lors de la mise à jour.'); }
+      await updateDoc(doc(db, 'signalements', id), { statut });
       showToast(`Signalement mis à jour : ${STATUS_LABEL[statut]}`);
-      await loadReports();
     }catch(err){
       console.error(err);
       showToast(err.message || 'Erreur lors de la mise à jour.');
     }
   };
 
+  // Anti-spam : contrôle CÔTÉ NAVIGATEUR uniquement (via localStorage). Sans
+  // backend, ce n'est qu'une gêne pour un utilisateur pressé, pas une vraie
+  // protection — un utilisateur motivé peut vider son localStorage. Pour un
+  // anti-spam robuste, il faudrait revenir à une fonction serveur (Vercel/
+  // Cloud Functions) ou à App Check.
+  function isRateLimited(){
+    const last = Number(localStorage.getItem('vf_last_report_at') || 0);
+    return Date.now() - last < RATE_LIMIT_MS;
+  }
+
   btnSubmit.addEventListener('click', async ()=>{
     if(!userPos){ showToast('Position GPS manquante.'); return; }
     if(!photoFile){ showToast('Une photo est requise.'); return; }
+    if(!currentUid){ showToast('Connexion en cours, réessayez dans un instant.'); return; }
+    if(isRateLimited()){
+      showToast('Vous avez déjà signalé un feu récemment. Merci de patienter quelques minutes.');
+      return;
+    }
 
     btnSubmit.disabled = true;
     btnSubmit.textContent = 'Compression de la photo...';
@@ -832,25 +889,21 @@
       const photoBase64 = await fileToCompressedDataURL(photoFile);
 
       btnSubmit.textContent = 'Envoi en cours...';
-      const res = await fetch('/api/reports', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          lat: userPos.lat, lng: userPos.lng, accuracy: userPos.accuracy,
-          lieu: document.getElementById('fLieu').value.trim(),
-          type: selectedType, gravite: selectedSev,
-          desc: document.getElementById('fDesc').value.trim(),
-          photoBase64
-        })
+      await addDoc(reportsCol, {
+        lat: userPos.lat, lng: userPos.lng,
+        accuracy: typeof userPos.accuracy === 'number' ? userPos.accuracy : null,
+        lieu: document.getElementById('fLieu').value.trim().slice(0, 200),
+        type: selectedType, gravite: selectedSev, statut: 'actif',
+        desc: document.getElementById('fDesc').value.trim().slice(0, 1000),
+        photoBase64,
+        reporterUid: currentUid,
+        votes: {},
+        createdAt: serverTimestamp(),
       });
-      if(!res.ok){
-        const e = await res.json().catch(()=>({}));
-        throw new Error(e.error || "Erreur lors de l'envoi du signalement.");
-      }
 
+      localStorage.setItem('vf_last_report_at', String(Date.now()));
       closeDrawer();
       showToast('Signalement envoyé — merci pour votre vigilance.');
-      await loadReports();
     }catch(err){
       console.error(err);
       showToast(err && err.message ? err.message : "Erreur lors de l'envoi du signalement. Réessayez.");
