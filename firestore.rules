@@ -1,0 +1,13 @@
+rules_version = '2';
+
+// Le SDK Admin (utilisé par les fonctions serverless Vercel) ignore ces
+// règles : il a toujours accès en lecture/écriture. Ces règles servent
+// uniquement à bloquer tout accès DIRECT depuis un navigateur, un curl,
+// ou n'importe quel client qui utiliserait la clé publique du projet.
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
