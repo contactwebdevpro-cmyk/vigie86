@@ -69,6 +69,26 @@ robuste contre le spam/bots, il faut activer **Firebase App Check**
 (Console Firebase → App Check), qui vérifie que les requêtes viennent bien
 d'une vraie page web et pas d'un script automatisé.
 
+## 🔔 Notifications navigateur (PC + mobile, gratuit, illimité)
+
+Un bouton **« Activer les alertes »** dans l'en-tête déclenche
+`Notification.requestPermission()`. Une fois autorisées, une notification
+navigateur s'affiche à chaque nouveau signalement détecté par le listener
+Firestore temps réel (`onSnapshot` → `docChanges()` de type `added`), sur PC
+comme sur mobile (Android/Chrome). Un `sw.js` minimal est enregistré
+uniquement pour permettre l'affichage de la notification en arrière-plan et
+pour rouvrir/centrer la carte sur le signalement au clic.
+
+**Ce que ça permet** : gratuit, illimité, aucun serveur, aucune clé API
+supplémentaire — cohérent avec l'architecture 100% client du projet.
+
+**Limite à connaître** : ça ne fonctionne que si le navigateur tourne
+(onglet ouvert ou en arrière-plan). Si le navigateur est complètement fermé,
+ou sur iPhone/Safari en usage normal (hors PWA installée + Web Push), aucune
+notification n'arrive — Apple/les OS exigent alors un vrai **Web Push**
+(clés VAPID + un serveur qui envoie la notification), ce qui demanderait de
+réintroduire un backend. Si tu veux ce niveau-là plus tard, dis-le-moi.
+
 ## Étapes de déploiement
 
 ### 1. Active l'authentification anonyme
