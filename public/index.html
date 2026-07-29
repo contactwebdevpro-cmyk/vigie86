@@ -3,6 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://cdnjs.cloudflare.com https://www.gstatic.com; style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: https://*.basemaps.cartocdn.com https://*.tile.openstreetmap.org; connect-src 'self' https://firestore.googleapis.com https://*.firebaseio.com https://identitytoolkit.googleapis.com https://securetoken.googleapis.com; object-src 'none'; base-uri 'self'; frame-ancestors 'none';">
 <title>VIGIE 86 — Signalement citoyen des feux</title>
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -482,7 +483,7 @@
   import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-app.js";
   import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-auth.js";
   import {
-    getFirestore, collection, addDoc, updateDoc, doc,
+    getFirestore, collection, addDoc, updateDoc, setDoc, doc,
     onSnapshot, query, orderBy, limit, serverTimestamp
   } from "https://www.gstatic.com/firebasejs/10.12.5/firebase-firestore.js";
 
@@ -548,6 +549,16 @@
     return (fake - confirm) >= CONTEST_THRESHOLD;
   }
 
+  // Échappement HTML — INDISPENSABLE : lieu/desc sont du texte saisi par
+  // n'importe quel visiteur (même un utilisateur qui écrit directement dans
+  // Firestore en contournant l'UI). Sans ça, on a une XSS stockée qui
+  // s'exécute chez TOUS les visiteurs affichant la carte/liste.
+  function escapeHtml(str){
+    return String(str ?? '').replace(/[&<>"']/g, (c) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+  }
+
   function showToast(msg){
     const t = document.getElementById('toast');
     t.textContent = msg;
@@ -575,20 +586,20 @@
     let statusBtns = '';
     if(isOwner){
       statusBtns = `
-        ${r.statut!=='maitrise' ? `<button class="popup-btn" onclick="window.setStatus('${r.id}','maitrise')">Marquer maîtrisé</button>` : ''}
-        ${r.statut!=='eteint' ? `<button class="popup-btn" onclick="window.setStatus('${r.id}','eteint')">Marquer éteint</button>` : ''}
+        ${r.statut!=='maitrise' ? `<button class="popup-btn" data-action="status" data-id="${r.id}" data-status="maitrise">Marquer maîtrisé</button>` : ''}
+        ${r.statut!=='eteint' ? `<button class="popup-btn" data-action="status" data-id="${r.id}" data-status="eteint">Marquer éteint</button>` : ''}
       `;
     }
     return `
       <div class="popup">
         ${photo}
-        <div class="popup-title">${r.lieu || 'Position GPS'}</div>
+        <div class="popup-title">${escapeHtml(r.lieu) || 'Position GPS'}</div>
         <div class="popup-sub">${TYPE_LABEL[r.type]} · ${SEV_LABEL[r.gravite]} · ${STATUS_LABEL[r.statut]} · ${relTime(tsMillis(r))}</div>
         ${contested ? `<div class="popup-contested">⚠ Signalé comme probablement faux par la communauté (${fake} contre ${confirm})</div>` : ''}
-        <div class="popup-desc">${r.desc || ''}</div>
+        <div class="popup-desc">${escapeHtml(r.desc)}</div>
         <div class="popup-actions">
-          <button class="popup-btn vote-confirm" onclick="window.voteReport('${r.id}','confirm')">👍 Confirmer (${confirm})</button>
-          <button class="popup-btn vote-fake" onclick="window.voteReport('${r.id}','fake')">🚩 Faux signal (${fake})</button>
+          <button class="popup-btn vote-confirm" data-action="vote" data-id="${r.id}" data-type="confirm">👍 Confirmer (${confirm})</button>
+          <button class="popup-btn vote-fake" data-action="vote" data-id="${r.id}" data-type="fake">🚩 Faux signal (${fake})</button>
           ${statusBtns}
         </div>
       </div>
@@ -622,14 +633,14 @@
       const contested = isContested(r);
       const thumb = r.photoBase64 ? `<img class="card-thumb" src="${r.photoBase64}" alt="">` : '';
       return `
-      <div class="card sev-${r.gravite} ${contested ? 'contested' : ''}" onclick="window.focusReport('${r.id}')">
+      <div class="card sev-${r.gravite} ${contested ? 'contested' : ''}" data-action="focus" data-id="${r.id}">
         ${thumb}
         <div class="card-body">
           <div class="card-top">
-            <div class="card-lieu">${r.lieu || 'Position GPS'}</div>
+            <div class="card-lieu">${escapeHtml(r.lieu) || 'Position GPS'}</div>
             <div class="card-time">${relTime(tsMillis(r))}</div>
           </div>
-          <div class="card-desc">${r.desc || ''}</div>
+          <div class="card-desc">${escapeHtml(r.desc)}</div>
           <div class="card-meta">
             <span class="tag">${TYPE_LABEL[r.type]}</span>
             <span class="tag status-${r.statut}">${STATUS_LABEL[r.statut]}</span>
@@ -851,16 +862,16 @@
     });
   }
 
-  window.voteReport = async function(id, type){
+  async function voteReport(id, type){
     try{
       await updateDoc(doc(db, 'signalements', id), { [`votes.${currentUid}`]: type });
     }catch(err){
       console.error(err);
       showToast(err.message || 'Erreur lors du vote.');
     }
-  };
+  }
 
-  window.setStatus = async function(id, statut){
+  async function setStatus(id, statut){
     try{
       await updateDoc(doc(db, 'signalements', id), { statut });
       showToast(`Signalement mis à jour : ${STATUS_LABEL[statut]}`);
@@ -868,7 +879,19 @@
       console.error(err);
       showToast(err.message || 'Erreur lors de la mise à jour.');
     }
-  };
+  }
+
+  // Délégation d'événements (remplace les anciens onclick="..." inline) :
+  // plus sûr et compatible avec un Content-Security-Policy strict sans
+  // 'unsafe-inline' sur script-src.
+  document.addEventListener('click', (e) => {
+    const el = e.target.closest('[data-action]');
+    if(!el) return;
+    const { action, id, type, status } = el.dataset;
+    if(action === 'vote') voteReport(id, type);
+    else if(action === 'status') setStatus(id, status);
+    else if(action === 'focus') window.focusReport && window.focusReport(id);
+  });
 
   // Anti-spam : contrôle CÔTÉ NAVIGATEUR uniquement (via localStorage). Sans
   // backend, ce n'est qu'une gêne pour un utilisateur pressé, pas une vraie
@@ -908,6 +931,14 @@
       });
 
       localStorage.setItem('vf_last_report_at', String(Date.now()));
+      // Anti-spam CÔTÉ SERVEUR : nécessaire pour que la règle Firestore
+      // "create" puisse vérifier le délai de 10 min même si l'utilisateur
+      // vide son localStorage ou navigue en privé.
+      try{
+        await setDoc(doc(db, 'cooldowns', currentUid), { last: serverTimestamp() });
+      }catch(err){
+        console.error('Écriture du cooldown échouée (non bloquant) :', err);
+      }
       closeDrawer();
       showToast('Signalement envoyé — merci pour votre vigilance.');
     }catch(err){

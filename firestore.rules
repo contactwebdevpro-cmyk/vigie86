@@ -13,28 +13,43 @@ service cloud.firestore {
       allow read: if true;
 
       // Création : uniquement un utilisateur authentifié (même anonyme),
-      // avec un document conforme au format attendu par l'application.
+      // avec un document conforme au format attendu par l'application,
+      // ET qui respecte le délai anti-spam (voir doc cooldowns/{uid}
+      // ci-dessous). Le contrôle de délai côté serveur est une protection
+      // réelle ; celui côté navigateur (localStorage) n'en est pas une.
       allow create: if request.auth != null
         && request.resource.data.reporterUid == request.auth.uid
         && request.resource.data.lat is number
+        && request.resource.data.lat >= -90 && request.resource.data.lat <= 90
         && request.resource.data.lng is number
+        && request.resource.data.lng >= -180 && request.resource.data.lng <= 180
         && request.resource.data.type in ['foret', 'champ', 'batiment', 'vehicule']
         && request.resource.data.gravite in ['mineur', 'modere', 'critique']
         && request.resource.data.statut == 'actif'
+        && request.resource.data.lieu is string
+        && request.resource.data.lieu.size() <= 200
         && request.resource.data.desc is string
         && request.resource.data.desc.size() <= 1000
         && request.resource.data.photoBase64 is string
         && request.resource.data.photoBase64.size() <= 900000
-        && request.resource.data.votes == {};
+        && request.resource.data.photoBase64.matches('^data:image/(jpeg|png|webp);base64,.+$')
+        && request.resource.data.votes == {}
+        && (
+          !exists(/databases/$(database)/documents/cooldowns/$(request.auth.uid))
+          || get(/databases/$(database)/documents/cooldowns/$(request.auth.uid)).data.last
+             < request.time - duration.value(10, 'm')
+        );
 
       // Mise à jour : deux cas autorisés, et rien d'autre.
       allow update: if request.auth != null && (
-        // 1) Voter : seul le champ "votes" change, et uniquement la clé
+        // 1) Voter : seul le champ "votes" change, uniquement la clé
         //    correspondant à l'utilisateur qui vote (impossible de voter
-        //    au nom de quelqu'un d'autre).
+        //    au nom de quelqu'un d'autre), et la valeur du vote doit être
+        //    l'une des deux valeurs attendues par l'application.
         (
           request.resource.data.diff(resource.data).affectedKeys().hasOnly(['votes'])
           && request.resource.data.votes.diff(resource.data.votes).affectedKeys().hasOnly([request.auth.uid])
+          && request.resource.data.votes[request.auth.uid] in ['confirm', 'fake']
         )
         ||
         // 2) Changer le statut : seul l'auteur du signalement peut le
@@ -47,6 +62,21 @@ service cloud.firestore {
       );
 
       // Personne ne peut supprimer un signalement depuis le client.
+      allow delete: if false;
+    }
+
+    // Horodatage anti-spam par utilisateur anonyme, un document par uid.
+    // Lu/écrit uniquement par son propriétaire ; sert de garde-fou côté
+    // serveur pour la création de signalements (voir règle create ci-dessus).
+    // Limite connue : un attaquant déterminé peut toujours se reconnecter en
+    // anonyme pour obtenir un nouvel uid. Pour une protection robuste contre
+    // les scripts/bots, activer Firebase App Check en complément.
+    match /cooldowns/{uid} {
+      allow read: if request.auth != null && request.auth.uid == uid;
+      allow create, update: if request.auth != null
+        && request.auth.uid == uid
+        && request.resource.data.keys().hasOnly(['last'])
+        && request.resource.data.last is timestamp;
       allow delete: if false;
     }
 

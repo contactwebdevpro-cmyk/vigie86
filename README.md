@@ -34,6 +34,41 @@
   - soit activer **Firebase App Check** (protège contre les abus
     automatisés, pas contre un humain qui recharge la page manuellement).
 
+## 🔒 Correctifs de sécurité appliqués (audit du 29/07/2026)
+
+- **XSS stockée corrigée** : les champs `lieu` et `desc`, saisis librement par
+  les visiteurs, étaient injectés sans échappement dans le HTML de la carte
+  et de la liste. Un contenu malveillant écrit directement dans Firestore
+  (en contournant l'interface) s'exécutait alors chez tous les visiteurs.
+  Une fonction `escapeHtml()` est maintenant appliquée systématiquement.
+- **`onclick` inline supprimés** au profit d'une délégation d'événements
+  (`data-action`, `data-id`, ...), ce qui permet d'ajouter un
+  `Content-Security-Policy` strict (sans `unsafe-inline`) en défense
+  supplémentaire contre l'exécution de script injecté.
+- **`firestore.rules` durcies** :
+  - le champ `lieu` n'était pas validé du tout (aucune limite de taille ou
+    de type) → ajout d'une validation (`string`, ≤ 200 caractères) ;
+  - la valeur d'un vote n'était pas contrôlée → elle doit désormais valoir
+    `'confirm'` ou `'fake'` ;
+  - `photoBase64` doit désormais correspondre au format attendu
+    (`data:image/...;base64,...`) ;
+  - `lat`/`lng` sont bornées à des valeurs géographiques plausibles ;
+  - un anti-spam **côté serveur** a été ajouté via une collection
+    `cooldowns/{uid}` (10 min entre deux signalements), en complément (pas
+    en remplacement) du repère `localStorage`.
+- **Dossier `api/` legacy supprimé** : il correspondait à une ancienne
+  architecture avec backend (Firebase Admin), incompatible et incohérente
+  avec l'architecture 100% client actuelle. Le conserver n'apportait aucune
+  fonctionnalité et ajoutait une surface d'attaque/confusion inutile.
+
+### Limite connue qui reste à traiter si besoin
+L'anti-spam reste contournable par un attaquant motivé, qui peut toujours
+ouvrir une nouvelle session anonyme Firebase pour obtenir un nouvel `uid`.
+Aucune règle Firestore ne peut empêcher ça à elle seule. Pour une protection
+robuste contre le spam/bots, il faut activer **Firebase App Check**
+(Console Firebase → App Check), qui vérifie que les requêtes viennent bien
+d'une vraie page web et pas d'un script automatisé.
+
 ## Étapes de déploiement
 
 ### 1. Active l'authentification anonyme
